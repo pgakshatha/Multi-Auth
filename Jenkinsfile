@@ -10,28 +10,53 @@ pipeline {
         IMAGE_TAG = "${BUILD_NUMBER}"
 
         CONTAINER_NAME = "multi-auth"
-        CONTAINER_PORT = "5001"
+        HOST_PORT = "5001"
         APP_PORT = "5000"
 
         ENV_FILE = "/opt/multi-auth/.env"
     }
 
+    options {
+        timestamps()
+        ansiColor('xterm')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
     stages {
 
-        stage('Checkout Code') {
+        stage('Prepare Workspace') {
             steps {
-                echo "Checking out source code..."
-                git branch: 'main',
-                    url: 'https://github.com/pgakshatha/Multi-Auth.git'
+                echo "Cleaning Workspace..."
+                deleteDir()
+
+                checkout scm
+
+                sh '''
+                    echo "===================================="
+                    echo "Git Commit:"
+                    git log -1 --oneline
+                    echo "===================================="
+                '''
+            }
+        }
+
+        stage('Verify Source Code') {
+            steps {
+                sh '''
+                    echo "Checking Health Route..."
+
+                    grep "Multi-Auth Service is Healthy" routes/index.routes.js
+
+                    echo "Health Route Found"
+                '''
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                echo "Building Docker Image..."
-
                 sh '''
-                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    docker build --no-cache \
+                    -t ${IMAGE_NAME}:${IMAGE_TAG} .
 
                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
                 '''
@@ -40,45 +65,35 @@ pipeline {
 
         stage('Login to Amazon ECR') {
             steps {
-                echo "Logging into Amazon ECR..."
-
                 sh '''
-                    aws ecr get-login-password --region ${AWS_REGION} | \
-                    docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                    aws ecr get-login-password \
+                    --region ${AWS_REGION} | \
+                    docker login \
+                    --username AWS \
+                    --password-stdin ${ECR_REGISTRY}
                 '''
             }
         }
 
-        stage('Tag Docker Images') {
+        stage('Push Image') {
             steps {
-                echo "Tagging Docker Images..."
-
                 sh '''
-                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} \
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
-                    docker tag ${IMAGE_NAME}:latest ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-                '''
-            }
-        }
+                    docker tag ${IMAGE_NAME}:latest \
+                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
 
-        stage('Push Docker Images') {
-            steps {
-                echo "Pushing Docker Images to Amazon ECR..."
-
-                sh '''
                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
-
                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
                 '''
             }
         }
 
-        stage('Deploy Application') {
+        stage('Deploy') {
             steps {
-                echo "Deploying Multi-Auth..."
-
                 sh '''
-                    docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+                    docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
                     docker stop ${CONTAINER_NAME} || true
                     docker rm ${CONTAINER_NAME} || true
@@ -86,29 +101,34 @@ pipeline {
                     docker run -d \
                         --name ${CONTAINER_NAME} \
                         --restart unless-stopped \
-                        -p ${CONTAINER_PORT}:${APP_PORT} \
+                        -p ${HOST_PORT}:${APP_PORT} \
                         --env-file ${ENV_FILE} \
-                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                 '''
             }
         }
 
         stage('Health Check') {
             steps {
-                echo "Checking Application Health..."
-
                 sh '''
                     sleep 20
 
-                    curl --fail http://localhost:5001/
+                    echo "Container Status"
+                    docker ps
+
+                    echo "Checking Application"
+
+                    curl --fail http://localhost:${HOST_PORT}/
+
+                    curl --fail http://localhost:${HOST_PORT}/health
+
+                    echo "Deployment Successful"
                 '''
             }
         }
 
         stage('Cleanup') {
             steps {
-                echo "Cleaning Docker Images..."
-
                 sh '''
                     docker image prune -af || true
                 '''
@@ -119,17 +139,26 @@ pipeline {
     post {
 
         success {
-            echo "=========================================="
-            echo "Multi-Auth Deployment Successful"
+
+            echo "========================================="
+            echo "Deployment Successful"
             echo "Build Number : ${BUILD_NUMBER}"
-            echo "Docker Image : ${IMAGE_NAME}:${IMAGE_TAG}"
-            echo "=========================================="
+            echo "Image : ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "========================================="
+
         }
 
         failure {
-            echo "=========================================="
-            echo "Multi-Auth Deployment Failed"
-            echo "=========================================="
+
+            echo "========================================="
+            echo "Deployment Failed"
+            echo "========================================="
+
+            sh '''
+                echo "Container Logs"
+
+                docker logs ${CONTAINER_NAME} || true
+            '''
         }
 
         always {
