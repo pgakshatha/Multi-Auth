@@ -542,6 +542,6 @@ Salaries  → id, userId, amount, currency, effectiveDate, notes
 
 MIT License
 
----
+----
 
 ⭐ **Star the repo if you found it useful!**
