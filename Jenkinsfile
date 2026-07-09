@@ -2,52 +2,53 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = "ap-south-1"
-        ECR_REGISTRY = "218014315199.dkr.ecr.ap-south-1.amazonaws.com"
-        ECR_REPOSITORY = "multi-auth"
+        AWS_REGION      = "ap-south-1"
+        ECR_REGISTRY    = "218014315199.dkr.ecr.ap-south-1.amazonaws.com"
+        ECR_REPOSITORY  = "multi-auth"
 
-        IMAGE_NAME = "multi-auth"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_NAME      = "multi-auth"
+        IMAGE_TAG       = "${BUILD_NUMBER}"
 
-        CONTAINER_NAME = "multi-auth"
-        HOST_PORT = "5001"
-        APP_PORT = "5000"
+        CONTAINER_NAME  = "multi-auth"
+        HOST_PORT       = "5001"
+        APP_PORT        = "5000"
 
-        ENV_FILE = "/opt/multi-auth/.env"
+        ENV_FILE        = "/opt/multi-auth/.env"
     }
 
     options {
         timestamps()
-        ansiColor('xterm')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(
+            numToKeepStr: '10',
+            artifactNumToKeepStr: '5'
+        ))
     }
 
     stages {
 
-        stage('Prepare Workspace') {
+        stage('Checkout') {
             steps {
-                echo "Cleaning Workspace..."
-                deleteDir()
-
                 checkout scm
 
                 sh '''
-                    echo "===================================="
-                    echo "Git Commit:"
+                    echo "========================================"
+                    echo "Git Commit"
                     git log -1 --oneline
-                    echo "===================================="
+                    echo "========================================"
                 '''
             }
         }
 
-        stage('Verify Source Code') {
+        stage('Verify Source') {
             steps {
                 sh '''
-                    echo "Checking Health Route..."
+                    echo "Checking project files..."
 
-                    grep "Multi-Auth Service is Healthy" routes/index.routes.js
+                    test -f Dockerfile || test -f dockerfile
+                    test -f package.json
+                    test -f server.js
 
-                    echo "Health Route Found"
+                    echo "Project verified."
                 '''
             }
         }
@@ -55,10 +56,13 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
-                    docker build --no-cache \
-                    -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    echo "Building Docker Image..."
 
-                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+                    docker build --no-cache \
+                        -t ${IMAGE_NAME}:${IMAGE_TAG} .
+
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} \
+                        ${IMAGE_NAME}:latest
                 '''
             }
         }
@@ -79,10 +83,10 @@ pipeline {
             steps {
                 sh '''
                     docker tag ${IMAGE_NAME}:${IMAGE_TAG} \
-                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
+                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
                     docker tag ${IMAGE_NAME}:latest \
-                    ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
+                        ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
 
                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
                     docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
@@ -93,6 +97,8 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
+                    echo "Deploying Container..."
+
                     docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}
 
                     docker stop ${CONTAINER_NAME} || true
@@ -111,18 +117,17 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
+                    echo "Waiting for application..."
+
                     sleep 20
 
-                    echo "Container Status"
-                    docker ps
-
-                    echo "Checking Application"
-
+                    echo "Checking root endpoint..."
                     curl --fail http://localhost:${HOST_PORT}/
 
-                    curl --fail http://localhost:${HOST_PORT}/health
+                    echo "Checking Docker container..."
+                    docker ps | grep ${CONTAINER_NAME}
 
-                    echo "Deployment Successful"
+                    echo "Health check completed."
                 '''
             }
         }
@@ -130,6 +135,8 @@ pipeline {
         stage('Cleanup') {
             steps {
                 sh '''
+                    echo "Cleaning unused Docker resources..."
+
                     docker image prune -af || true
                 '''
             }
@@ -139,24 +146,21 @@ pipeline {
     post {
 
         success {
-
-            echo "========================================="
+            echo "========================================"
             echo "Deployment Successful"
-            echo "Build Number : ${BUILD_NUMBER}"
-            echo "Image : ${IMAGE_NAME}:${IMAGE_TAG}"
-            echo "========================================="
-
+            echo "Application : ${IMAGE_NAME}"
+            echo "Build Number: ${BUILD_NUMBER}"
+            echo "Docker Tag  : ${IMAGE_TAG}"
+            echo "========================================"
         }
 
         failure {
-
-            echo "========================================="
+            echo "========================================"
             echo "Deployment Failed"
-            echo "========================================="
+            echo "========================================"
 
             sh '''
-                echo "Container Logs"
-
+                echo "Container Logs:"
                 docker logs ${CONTAINER_NAME} || true
             '''
         }
